@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
-from typing import Callable
-from urllib.request import Request, urlopen
+from typing import Awaitable, Callable
+
+import aiohttp
+
+from translator.cache import Cache
 
 DEFAULT_TIMEOUT_SECONDS = 10.0
-DEFAULT_USER_AGENT = "translator/0.1"
+DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 6.1; Win64; x64)"
 
-Fetcher = Callable[[str], str]
+AsyncFetcher = Callable[[str], Awaitable[str]]
 
 logger = logging.getLogger(__name__)
 
@@ -21,12 +24,37 @@ class FetchError(Exception):
         return self.message
 
 
-def fetch_text(url: str, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> str:
-    request = Request(url, headers={"User-Agent": DEFAULT_USER_AGENT})
+async def fetch_text_async(
+    url: str,
+    session: aiohttp.ClientSession,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+) -> str:
+    timeout_config = aiohttp.ClientTimeout(total=timeout)
     try:
-        with urlopen(request, timeout=timeout) as response:
-            charset = response.headers.get_content_charset() or "utf-8"
-            return response.read().decode(charset, errors="replace")
+        async with session.get(
+            url,
+            headers={"User-Agent": DEFAULT_USER_AGENT},
+            timeout=timeout_config,
+        ) as response:
+            return await response.text(errors="replace")
     except Exception as exc:
-        logger.warning("Fetch failed for %s: %s", url, exc)
+        logger.debug("Fetch failed for %s: %s", url, exc)
         raise FetchError(f"Failed to fetch {url}") from exc
+
+
+def build_async_fetcher(
+    session: aiohttp.ClientSession,
+    cache: Cache | None = None,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+) -> AsyncFetcher:
+    async def fetch(url: str) -> str:
+        if cache is not None:
+            cached = cache.get(url)
+            if cached is not None:
+                return cached
+        payload = await fetch_text_async(url, session, timeout)
+        if cache is not None:
+            cache.set(url, payload)
+        return payload
+
+    return fetch

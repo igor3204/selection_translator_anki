@@ -1,41 +1,43 @@
 from __future__ import annotations
 
 import argparse
-import json
+import asyncio
 
-from translator.engine import translate
+from translator.engine import translate_async
 from translator.models import TranslationResult
 
 
-def _result_to_dict(result: TranslationResult) -> dict[str, object]:
-    examples: list[dict[str, object]] = []
-    for example in result.examples:
-        examples.append({"en": example.en, "ru": example.ru})
-    return {
-        "source_text": result.source_text,
-        "normalized_text": result.normalized_text,
-        "translation_ru": result.translation_ru,
-        "ipa_uk": result.ipa_uk,
-        "audio_uk_url": result.audio_uk_url,
-        "examples": examples,
-        "provider_used": result.provider_used.value,
-        "errors": result.errors,
-    }
+def _format_summary(result: TranslationResult, empty_for_none: bool = False) -> str:
+    def _format_value(value: str | None) -> str | None:
+        if value is None and empty_for_none:
+            return ""
+        return value
+
+    lines = [
+        f"translation_ru: {_format_value(result.translation_ru)}",
+        f"ipa_uk: {_format_value(result.ipa_uk)}",
+        f"example_en: {_format_value(result.example_en)}",
+        f"example_ru: {_format_value(result.example_ru)}",
+    ]
+    return "\n".join(lines)
 
 
-def _print_summary(result: TranslationResult) -> None:
-    print(f"source_text: {result.source_text}")
-    print(f"normalized_text: {result.normalized_text}")
-    print(f"translation_ru: {result.translation_ru}")
-    print(f"ipa_uk: {result.ipa_uk}")
-    print(f"audio_uk_url: {result.audio_uk_url}")
-    if result.examples:
-        first_example = result.examples[0]
-        print(f"example_en: {first_example.en}")
-        print(f"example_ru: {first_example.ru}")
-    print(f"provider_used: {result.provider_used.value}")
-    if result.errors:
-        print(f"errors: {', '.join(result.errors)}")
+def _print_summary(result: TranslationResult, empty_for_none: bool = False) -> None:
+    print(_format_summary(result, empty_for_none))
+
+
+async def _translate_with_partial(text: str) -> tuple[TranslationResult, bool]:
+    partial_printed = False
+
+    def on_partial(result: TranslationResult) -> None:
+        nonlocal partial_printed
+        if partial_printed:
+            return
+        partial_printed = True
+        _print_summary(result, empty_for_none=True)
+
+    result = await translate_async(text, on_partial=on_partial)
+    return result, partial_printed
 
 
 def main() -> None:
@@ -43,9 +45,8 @@ def main() -> None:
     parser.add_argument("text", nargs="+", help="Text to translate")
     args = parser.parse_args()
     text = " ".join(args.text)
-    result = translate(text)
+    result, _ = asyncio.run(_translate_with_partial(text))
     _print_summary(result)
-    print(json.dumps(_result_to_dict(result), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

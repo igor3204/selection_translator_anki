@@ -10,18 +10,18 @@ class Example:
     ru: str | None
 
 
-class Provider(Enum):
-    CAMBRIDGE = "cambridge"
-    GOOGLE = "google"
-
-
 @dataclass(frozen=True, slots=True)
 class TranslationResult:
-    source_text: str
-    normalized_text: str
     translation_ru: str | None
     ipa_uk: str | None
-    audio_uk_url: str | None
-    examples: list[Example]
-    provider_used: Provider
-    errors: list[str]
+    example_en: str | None
+    example_ru: str | None
+
+
+class TranslationLimit(Enum):
+    PRIMARY = 3
+
+
+class QueryLimit(Enum):
+    MAX_CHARS = 200
+    MAX_CAMBRIDGE_WORDS = 5

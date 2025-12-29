@@ -3,65 +3,126 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import logging
+from typing import TypeAlias
 from urllib.parse import quote_plus
 
-from translator.http import FetchError, Fetcher
+from translator.http import AsyncFetcher, FetchError
 from translator.text import normalize_whitespace
+from translator.translation import clean_translations
 
 GOOGLE_TRANSLATE_BASE_URL = "https://translate.googleapis.com/translate_a/single"
+GOOGLE_TRANSLATE_DT_PARAMS = (
+    "bd",
+    "ex",
+    "ld",
+    "md",
+    "rw",
+    "rm",
+    "ss",
+    "t",
+    "at",
+    "gt",
+    "qca",
+)
 
 logger = logging.getLogger(__name__)
+
+JsonValue: TypeAlias = (
+    dict[str, "JsonValue"] | list["JsonValue"] | str | int | float | bool | None
+)
 
 
 @dataclass(frozen=True, slots=True)
 class GoogleResult:
-    translation_ru: str | None
-    errors: list[str]
+    translations: list[str]
 
 
 def build_google_url(text: str, source_lang: str, target_lang: str) -> str:
     encoded = quote_plus(text)
-    params = f"client=gtx&dj=1&sl={source_lang}&tl={target_lang}&dt=t&q={encoded}"
+    dt_params = "&".join(f"dt={param}" for param in GOOGLE_TRANSLATE_DT_PARAMS)
+    params = (
+        f"client=gtx&dj=1&ie=UTF-8&sl={source_lang}&tl={target_lang}"
+        f"&{dt_params}&q={encoded}"
+    )
     return f"{GOOGLE_TRANSLATE_BASE_URL}?{params}"
 
 
-def translate_google(
-    text: str, source_lang: str, target_lang: str, fetcher: Fetcher
+async def translate_google(
+    text: str, source_lang: str, target_lang: str, fetcher: AsyncFetcher
 ) -> GoogleResult:
-    errors: list[str] = []
     if not text:
-        return GoogleResult(translation_ru=None, errors=["Empty input"])
+        return GoogleResult(translations=[])
     url = build_google_url(text, source_lang, target_lang)
     try:
-        payload = fetcher(url)
-    except FetchError as exc:
-        errors.append(str(exc))
-        return GoogleResult(translation_ru=None, errors=errors)
+        payload = await fetcher(url)
+    except FetchError:
+        return GoogleResult(translations=[])
     try:
-        translation = _parse_google_response(payload)
+        translations = _parse_google_response(payload)
     except Exception as exc:
         logger.warning("Google parse failed: %s", exc)
-        errors.append("Google parse failed")
-        return GoogleResult(translation_ru=None, errors=errors)
-    if translation is None:
-        errors.append("Google missing translation")
-    return GoogleResult(translation_ru=translation, errors=errors)
+        return GoogleResult(translations=[])
+    return GoogleResult(translations=translations)
 
 
-def _parse_google_response(payload: str) -> str | None:
-    raw_data: object = json.loads(payload)
-    if not isinstance(raw_data, dict):
-        return None
-    sentences_obj: object = raw_data.get("sentences")
-    if not isinstance(sentences_obj, list):
-        return None
+def _parse_google_response(payload: str) -> list[str]:
+    raw_payload: JsonValue = json.loads(payload)
+    raw_data = _as_dict(raw_payload)
+    if raw_data is None:
+        return []
+    translations = _extract_dict_terms(raw_data)
+    translations.extend(_extract_sentence_translations(raw_data))
+    return clean_translations(translations)
+
+
+def _extract_sentence_translations(raw_data: dict[str, JsonValue]) -> list[str]:
+    sentences = _as_list(raw_data.get("sentences"))
+    if sentences is None:
+        return []
     translations: list[str] = []
-    for item in sentences_obj:
-        item_obj: object = item
-        if not isinstance(item_obj, dict):
+    for item in sentences:
+        item_obj = _as_dict(item)
+        if item_obj is None:
             continue
-        trans_value: object = item_obj.get("trans")
-        if isinstance(trans_value, str):
+        trans_value = _get_str(item_obj.get("trans"))
+        if trans_value:
             translations.append(trans_value)
-    combined = normalize_whitespace("".join(translations))
-    return combined or None
+    return translations
+
+
+def _extract_dict_terms(raw_data: dict[str, JsonValue]) -> list[str]:
+    dict_items = _as_list(raw_data.get("dict"))
+    if dict_items is None:
+        return []
+    translations: list[str] = []
+    for item in dict_items:
+        item_obj = _as_dict(item)
+        if item_obj is None:
+            continue
+        terms = _as_list(item_obj.get("terms"))
+        if terms is None:
+            continue
+        for term in terms:
+            term_value = _get_str(term)
+            if term_value:
+                translations.append(term_value)
+    return translations
+
+
+def _as_dict(value: JsonValue) -> dict[str, JsonValue] | None:
+    if isinstance(value, dict):
+        return value
+    return None
+
+
+def _as_list(value: JsonValue) -> list[JsonValue] | None:
+    if isinstance(value, list):
+        return value
+    return None
+
+
+def _get_str(value: JsonValue) -> str | None:
+    if isinstance(value, str):
+        normalized = normalize_whitespace(value)
+        return normalized or None
+    return None

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
+from enum import Enum
 import logging
+from typing import Callable
+from urllib.parse import quote_plus
 
 from translator.html_parser import (
     HtmlNode,
@@ -10,15 +14,21 @@ from translator.html_parser import (
     has_ancestor_with_class,
     parse_html,
 )
-from translator.http import FetchError, Fetcher
+from translator.http import AsyncFetcher, FetchError
 from translator.models import Example
-from translator.text import normalize_whitespace, to_cambridge_slug
+from translator.text import normalize_text, normalize_whitespace
+from translator.translation import clean_translations
 
 CAMBRIDGE_BASE_URL = "https://dictionary.cambridge.org"
-CAMBRIDGE_ENGLISH_URL = f"{CAMBRIDGE_BASE_URL}/dictionary/english/"
-CAMBRIDGE_ENGLISH_RUSSIAN_URL = f"{CAMBRIDGE_BASE_URL}/dictionary/english-russian/"
+CAMBRIDGE_SEARCH_URL = f"{CAMBRIDGE_BASE_URL}/search/direct/"
+CAMBRIDGE_RUSSIAN_LANG = "ru"
 
 logger = logging.getLogger(__name__)
+
+
+class CambridgeDataset(Enum):
+    ENGLISH = "english"
+    ENGLISH_RUSSIAN = "english-russian"
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,10 +39,7 @@ class CambridgeUrls:
 
 @dataclass(frozen=True, slots=True)
 class CambridgePageData:
-    has_di_body: bool
-    has_entry: bool
     ipa_uk: str | None
-    audio_uk_url: str | None
     translations: list[str]
     examples: list[Example]
 
@@ -40,110 +47,114 @@ class CambridgePageData:
 @dataclass(frozen=True, slots=True)
 class CambridgeResult:
     found: bool
-    translation_ru: str | None
+    translations: list[str]
     ipa_uk: str | None
-    audio_uk_url: str | None
     examples: list[Example]
-    errors: list[str]
 
 
 def build_cambridge_urls(text: str) -> CambridgeUrls:
-    slug = to_cambridge_slug(text)
+    slug = _normalize_cambridge_query(text)
     return CambridgeUrls(
-        english=f"{CAMBRIDGE_ENGLISH_URL}{slug}",
-        english_russian=f"{CAMBRIDGE_ENGLISH_RUSSIAN_URL}{slug}",
+        english=_build_cambridge_search_url(CambridgeDataset.ENGLISH, slug),
+        english_russian=_build_cambridge_search_url(
+            CambridgeDataset.ENGLISH_RUSSIAN, slug
+        ),
     )
 
 
-def translate_cambridge(text: str, fetcher: Fetcher) -> CambridgeResult:
+async def translate_cambridge(text: str, fetcher: AsyncFetcher) -> CambridgeResult:
     urls = build_cambridge_urls(text)
-    errors: list[str] = []
-    try:
-        english_html = fetcher(urls.english)
-        russian_html = fetcher(urls.english_russian)
-    except FetchError as exc:
-        errors.append(str(exc))
+    english_html, russian_html = await asyncio.gather(
+        _try_fetch(fetcher, urls.english),
+        _try_fetch(fetcher, urls.english_russian),
+    )
+
+    if english_html is None and russian_html is None:
         return CambridgeResult(
             found=False,
-            translation_ru=None,
+            translations=[],
             ipa_uk=None,
-            audio_uk_url=None,
             examples=[],
-            errors=errors,
         )
 
     try:
-        english_data = parse_cambridge_page(english_html)
-        russian_data = parse_cambridge_page(russian_html)
+        english_data = (
+            parse_cambridge_page(english_html)
+            if english_html is not None
+            else _empty_page_data()
+        )
+        russian_data = (
+            parse_cambridge_page(russian_html, translation_lang=CAMBRIDGE_RUSSIAN_LANG)
+            if russian_html is not None
+            else _empty_page_data()
+        )
     except Exception as exc:
         logger.warning("Cambridge parse failed: %s", exc)
-        errors.append("Cambridge parse failed")
         return CambridgeResult(
             found=False,
-            translation_ru=None,
+            translations=[],
             ipa_uk=None,
-            audio_uk_url=None,
             examples=[],
-            errors=errors,
         )
 
-    translation_ru = russian_data.translations[0] if russian_data.translations else None
+    translations = russian_data.translations or english_data.translations
     ipa_uk = english_data.ipa_uk or russian_data.ipa_uk
-    audio_uk_url = english_data.audio_uk_url or russian_data.audio_uk_url
     examples = russian_data.examples or english_data.examples
 
-    core_found = (
-        russian_data.has_di_body
-        and russian_data.has_entry
-        and translation_ru is not None
-    )
-    if not core_found:
-        return CambridgeResult(
-            found=False,
-            translation_ru=None,
-            ipa_uk=None,
-            audio_uk_url=None,
-            examples=[],
-            errors=errors,
-        )
-
-    if ipa_uk is None:
-        errors.append("Cambridge missing UK IPA")
-    if audio_uk_url is None:
-        errors.append("Cambridge missing UK audio")
-    if not examples:
-        errors.append("Cambridge missing examples")
-
     return CambridgeResult(
-        found=True,
-        translation_ru=translation_ru,
+        found=bool(translations),
+        translations=translations,
         ipa_uk=ipa_uk,
-        audio_uk_url=audio_uk_url,
         examples=examples,
-        errors=errors,
     )
 
 
-def parse_cambridge_page(html: str) -> CambridgePageData:
+async def _try_fetch(fetcher: AsyncFetcher, url: str) -> str | None:
+    try:
+        return await fetcher(url)
+    except FetchError:
+        return None
+
+
+def parse_cambridge_page(
+    html: str, translation_lang: str | None = None
+) -> CambridgePageData:
     root = parse_html(html)
-    has_di_body = find_first(root, _is_di_body) is not None
-    has_entry = bool(find_all(root, _is_entry_block))
-    ipa_uk = _extract_ipa_uk(root)
-    audio_uk_url = _extract_audio_uk(root)
-    translations = _extract_translations(root)
-    examples = _extract_examples(root)
+    entries = find_all(root, _is_entry_block)
+    ipa_uk: str | None = None
+    translations: list[str] = []
+    examples: list[Example] = []
+    seen_examples: set[tuple[str, str | None]] = set()
+
+    for entry in entries:
+        if ipa_uk is None:
+            ipa_uk = _extract_ipa_uk(entry)
+        for translation in _extract_entry_translations(entry, translation_lang):
+            translations.append(translation)
+        for example in _extract_entry_examples(entry):
+            key = (example.en, example.ru)
+            if key not in seen_examples:
+                examples.append(example)
+                seen_examples.add(key)
+
+    if not entries:
+        ipa_uk = _extract_ipa_uk(root)
+        translations = _extract_translations(root, translation_lang)
+        examples = _extract_examples(root)
+    translations = clean_translations(translations)
     return CambridgePageData(
-        has_di_body=has_di_body,
-        has_entry=has_entry,
         ipa_uk=ipa_uk,
-        audio_uk_url=audio_uk_url,
         translations=translations,
         examples=examples,
     )
 
 
-def _is_di_body(node: HtmlNode) -> bool:
-    return node.tag == "div" and "di-body" in node.classes()
+def _empty_page_data() -> CambridgePageData:
+    return CambridgePageData(
+        ipa_uk=None,
+        translations=[],
+        examples=[],
+    )
 
 
 def _is_entry_block(node: HtmlNode) -> bool:
@@ -158,37 +169,55 @@ def _is_entry_block(node: HtmlNode) -> bool:
     )
 
 
+def _is_def_block(node: HtmlNode) -> bool:
+    return node.tag == "div" and "def-block" in node.classes()
+
+
+def _is_def_body(node: HtmlNode) -> bool:
+    return node.tag == "div" and "def-body" in node.classes()
+
+
+def _normalize_cambridge_query(value: str) -> str:
+    normalized = normalize_text(value)
+    return quote_plus(normalized)
+
+
+def _build_cambridge_search_url(dataset: CambridgeDataset, query: str) -> str:
+    return f"{CAMBRIDGE_SEARCH_URL}?datasetsearch={dataset.value}&q={query}"
+
+
 def _extract_ipa_uk(root: HtmlNode) -> str | None:
-    nodes = find_all(
-        root,
-        lambda node: node.tag == "span"
-        and {"pron", "dpron"}.issubset(node.classes())
-        and has_ancestor_with_class(node, "uk"),
-    )
-    for node in nodes:
+    def _is_pron(node: HtmlNode) -> bool:
+        return node.tag == "span" and {"pron", "dpron"}.issubset(node.classes())
+
+    def _is_ipa(node: HtmlNode) -> bool:
+        return node.tag == "span" and {"ipa", "dipa"}.issubset(node.classes())
+
+    def _is_uk_pron(node: HtmlNode) -> bool:
+        return _is_pron(node) and has_ancestor_with_class(node, "uk")
+
+    def _is_uk_ipa(node: HtmlNode) -> bool:
+        return _is_ipa(node) and has_ancestor_with_class(node, "uk")
+
+    predicates: list[Callable[[HtmlNode], bool]] = [
+        _is_uk_pron,
+        _is_pron,
+        _is_uk_ipa,
+        _is_ipa,
+    ]
+    for predicate in predicates:
+        node = find_first(root, predicate)
+        if node is None:
+            continue
         text = normalize_whitespace(node.text_content())
         if text:
             return text
     return None
 
 
-def _extract_audio_uk(root: HtmlNode) -> str | None:
-    nodes = find_all(
-        root,
-        lambda node: node.tag == "source"
-        and node.attrs.get("type") == "audio/mpeg"
-        and has_ancestor_with_class(node, "uk"),
-    )
-    for node in nodes:
-        src = node.attrs.get("src", "").strip()
-        if src:
-            if src.startswith("http://") or src.startswith("https://"):
-                return src
-            return f"{CAMBRIDGE_BASE_URL}{src}"
-    return None
-
-
-def _extract_translations(root: HtmlNode) -> list[str]:
+def _extract_translations(
+    root: HtmlNode, translation_lang: str | None = None
+) -> list[str]:
     translations: list[str] = []
     nodes = find_all(
         root,
@@ -199,6 +228,13 @@ def _extract_translations(root: HtmlNode) -> list[str]:
             node, "dexamp"
         ):
             continue
+        lang = _normalize_lang(node.attrs.get("lang"))
+        if (
+            translation_lang
+            and lang is not None
+            and not lang.startswith(translation_lang)
+        ):
+            continue
         text = normalize_whitespace(node.text_content())
         if text and text not in translations:
             translations.append(text)
@@ -207,18 +243,24 @@ def _extract_translations(root: HtmlNode) -> list[str]:
 
 def _extract_examples(root: HtmlNode) -> list[Example]:
     examples: list[Example] = []
+    seen: set[tuple[str, str | None]] = set()
     nodes = find_all(
         root,
         lambda node: node.tag == "div" and "examp" in node.classes(),
     )
     for node in nodes:
-        en_text = _extract_example_text(node, "eg")
+        en_text = _build_example_english(node)
         if not en_text:
             en_text = normalize_whitespace(node.text_content())
         if not en_text:
             continue
         ru_text = _extract_example_text(node, "trans")
-        examples.append(Example(en=en_text, ru=ru_text))
+        example = Example(en=en_text, ru=ru_text)
+        key = (example.en, example.ru)
+        if key in seen:
+            continue
+        seen.add(key)
+        examples.append(example)
     return examples
 
 
@@ -231,3 +273,64 @@ def _extract_example_text(node: HtmlNode, class_name: str) -> str | None:
         if text:
             return text
     return None
+
+
+def _build_example_english(node: HtmlNode) -> str | None:
+    sentence = _extract_example_text(node, "eg")
+    if sentence:
+        return sentence
+    lead_in = _extract_example_text(node, "lu")
+    if lead_in:
+        return lead_in
+    return None
+
+
+def _extract_entry_translations(
+    entry: HtmlNode, translation_lang: str | None
+) -> list[str]:
+    def_blocks = find_all(entry, _is_def_block)
+    if not def_blocks:
+        return _extract_translations(entry, translation_lang)
+    translations: list[str] = []
+    for def_block in def_blocks:
+        def_bodies = find_all(def_block, _is_def_body)
+        if not def_bodies:
+            def_bodies = [def_block]
+        for def_body in def_bodies:
+            translations.extend(_extract_translations(def_body, translation_lang))
+    return translations
+
+
+def _extract_entry_examples(entry: HtmlNode) -> list[Example]:
+    def_blocks = find_all(entry, _is_def_block)
+    nodes: list[HtmlNode] = []
+    if def_blocks:
+        for def_block in def_blocks:
+            nodes.extend(
+                find_all(
+                    def_block,
+                    lambda node: node.tag == "div" and "examp" in node.classes(),
+                )
+            )
+    if not nodes:
+        nodes = find_all(
+            entry,
+            lambda node: node.tag == "div" and "examp" in node.classes(),
+        )
+    examples: list[Example] = []
+    for node in nodes:
+        en_text = _build_example_english(node)
+        if not en_text:
+            en_text = normalize_whitespace(node.text_content())
+        if not en_text:
+            continue
+        ru_text = _extract_example_text(node, "trans")
+        examples.append(Example(en=en_text, ru=ru_text))
+    return examples
+
+
+def _normalize_lang(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    return normalized or None
