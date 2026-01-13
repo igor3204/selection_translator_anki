@@ -11,6 +11,7 @@ from desktop_app.adapters.clipboard_writer import ClipboardWriter
 from desktop_app.anki import AnkiAddResult, AnkiCreateModelResult, AnkiListResult
 from desktop_app.application.anki_flow import AnkiFlow
 from desktop_app.application.history import HistoryItem
+from desktop_app.application.translation_executor import TranslationExecutor
 from desktop_app.application.translation_flow import TranslationFlow
 from desktop_app.config import AnkiConfig, AnkiFieldMap, AppConfig, LanguageConfig
 from desktop_app.controllers.anki_controller import AnkiController
@@ -111,17 +112,11 @@ class FakeAnkiPort:
 def controller(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> TranslationController:
-    from desktop_app.controllers import translation_controller as controller_module
+    from desktop_app.controllers import translation_view as view_module
 
-    monkeypatch.setattr(controller_module, "TranslationWindow", DummyTranslationWindow)
+    monkeypatch.setattr(view_module, "TranslationWindow", DummyTranslationWindow)
 
     app = DummyApp()
-    translation_flow = TranslationFlow(
-        translator=FakeTranslator(),
-        history=FakeHistory(),
-    )
-    anki_flow = AnkiFlow(service=FakeAnkiPort())
-    anki_controller = AnkiController(anki_flow=anki_flow)
     config = AppConfig(
         languages=LanguageConfig(source="en", target="ru"),
         anki=AnkiConfig(
@@ -136,10 +131,20 @@ def controller(
             ),
         ),
     )
+    translation_flow = TranslationFlow(
+        translator=FakeTranslator(),
+        history=FakeHistory(),
+    )
+    translation_executor = TranslationExecutor(
+        flow=translation_flow,
+        config=config,
+    )
+    anki_flow = AnkiFlow(service=FakeAnkiPort())
+    anki_controller = AnkiController(anki_flow=anki_flow)
     clipboard_writer = ClipboardWriter()
     return TranslationController(
         app=app,
-        translation_flow=translation_flow,
+        translation_executor=translation_executor,
         cancel_active=lambda: None,
         config=config,
         clipboard_writer=clipboard_writer,
@@ -162,12 +167,12 @@ def test_history_item_click_opens_translation(
 
     controller._on_history_item_selected(item)
 
-    assert controller._current_text == "hello"
-    assert controller._current_result == result
-    assert controller._translation_view is not None
-    assert controller._translation_view.presented is True
+    assert controller._state.memory.text == "hello"
+    assert controller._state.memory.result == result
+    assert controller._view._translation_view is not None
+    assert controller._view._translation_view.presented is True
 
-    state = controller._view_state
+    state = controller._view.state
     assert state.original.strip() == "hello"
     assert state.translation == "перевод"
     assert state.loading is False

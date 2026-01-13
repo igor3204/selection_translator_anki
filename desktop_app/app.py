@@ -14,6 +14,7 @@ from desktop_app.controllers import (
     TranslationController,
 )
 from desktop_app.controllers.settings_controller import AnkiActionResult, AnkiStatus
+from desktop_app.application.translation_executor import TranslationExecutor
 from desktop_app.gnome.dbus_service import DbusService
 from desktop_app.services.container import AppServices
 from desktop_app import gtk_types
@@ -50,7 +51,10 @@ class TranslatorApp(gtk_types.Gtk.Application):
         )
         self._translation_controller = TranslationController(
             app=self,
-            translation_flow=self._services.translation_flow,
+            translation_executor=TranslationExecutor(
+                flow=self._services.translation_flow,
+                config=self._config,
+            ),
             cancel_active=self._services.cancel_active,
             config=self._config,
             clipboard_writer=self._clipboard_writer,
