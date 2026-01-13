@@ -5,7 +5,6 @@ from dataclasses import dataclass
 import importlib
 
 from desktop_app import gtk_types
-from desktop_app import telemetry
 from desktop_app.controllers.settings_controller import AnkiActionResult, AnkiStatus
 from desktop_app.anki import AnkiListResult
 
@@ -90,7 +89,6 @@ class DbusService:
     ) -> "DbusService | None":
         connection = app.get_dbus_connection()
         if connection is None:
-            telemetry.log_event("dbus.unavailable")
             return None
         node = Gio.DBusNodeInfo.new_for_xml(INTERFACE_XML)
         interface = node.interfaces[0]
@@ -112,10 +110,8 @@ class DbusService:
             service._on_method_call,
         )
         if registration_id == 0:
-            telemetry.log_event("dbus.register_failed")
             return None
         service.registration_id = registration_id
-        telemetry.log_event("dbus.registered", name=BUS_NAME, path=OBJECT_PATH)
         return service
 
     def close(self) -> None:
@@ -196,13 +192,12 @@ class DbusService:
 def _extract_text(parameters: object) -> str | None:
     if isinstance(parameters, VariantType):
         try:
-            values = parameters.unpack()
+            unpacked: object = parameters.unpack()
         except Exception:
             return None
-        if isinstance(values, tuple) and values:
-            value = values[0]
-            if isinstance(value, str):
-                return value
+        if isinstance(unpacked, tuple) and unpacked and isinstance(unpacked[0], str):
+            return unpacked[0]
+        return None
     return None
 
 

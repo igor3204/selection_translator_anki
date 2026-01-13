@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-import logging
 from typing import TypeAlias
 from urllib.parse import quote_plus
 
@@ -24,8 +23,6 @@ GOOGLE_TRANSLATE_DT_PARAMS = (
     "gt",
     "qca",
 )
-
-logger = logging.getLogger(__name__)
 
 JsonValue: TypeAlias = (
     dict[str, "JsonValue"] | list["JsonValue"] | str | int | float | bool | None
@@ -59,8 +56,7 @@ async def translate_google(
         return GoogleResult(translations=[])
     try:
         translations = parse_google_response(payload)
-    except Exception as exc:
-        logger.warning("Google parse failed: %s", exc)
+    except Exception:
         return GoogleResult(translations=[])
     return GoogleResult(translations=translations)
 

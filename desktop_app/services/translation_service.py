@@ -9,7 +9,6 @@ import aiohttp
 
 from desktop_app.services.result_cache import ResultCache
 from desktop_app.services.runtime import AsyncRuntime
-from desktop_app import telemetry
 from translate_logic.cache import LruTtlCache
 from translate_logic.application.translate import translate_async
 from translate_logic.http import AsyncFetcher, build_async_fetcher
@@ -43,7 +42,6 @@ class TranslationService:
         cache_key = _cache_key(text, source_lang, target_lang)
         cached = self.result_cache.get(cache_key)
         if cached is not None:
-            telemetry.log_event("translation.cache_hit", **telemetry.text_meta(text))
             future: Future[TranslationResult] = Future()
             future.set_result(cached)
             return future

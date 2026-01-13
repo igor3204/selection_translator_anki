@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from enum import Enum
-import logging
 from typing import Callable
 from urllib.parse import quote_plus
 
@@ -22,8 +21,6 @@ from translate_logic.translation import clean_translations
 CAMBRIDGE_BASE_URL = "https://dictionary.cambridge.org"
 CAMBRIDGE_SEARCH_URL = f"{CAMBRIDGE_BASE_URL}/search/direct/"
 CAMBRIDGE_RUSSIAN_LANG = "ru"
-
-logger = logging.getLogger(__name__)
 
 
 class CambridgeDataset(Enum):
@@ -95,8 +92,7 @@ async def translate_cambridge(text: str, fetcher: AsyncFetcher) -> CambridgeResu
                 if russian_html is not None
                 else _empty_page_data()
             )
-        except Exception as exc:
-            logger.warning("Cambridge parse failed: %s", exc)
+        except Exception:
             continue
 
         translations = russian_data.translations or english_data.translations

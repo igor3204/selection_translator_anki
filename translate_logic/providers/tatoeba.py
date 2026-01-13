@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import json
-import logging
 from typing import TypeGuard
 from urllib.parse import quote_plus
 
@@ -13,8 +12,6 @@ from translate_logic.text import normalize_text, normalize_whitespace
 
 TATOEBA_BASE_URL = "https://api.tatoeba.org/unstable/sentences"
 TATOEBA_DEFAULT_LIMIT = 5
-
-logger = logging.getLogger(__name__)
 
 
 class TatoebaLanguage(Enum):
@@ -56,13 +53,11 @@ async def translate_tatoeba(text: str, fetcher: AsyncFetcher) -> TatoebaResult:
     url = build_tatoeba_url(text)
     try:
         payload = await fetcher(url)
-    except FetchError as exc:
-        logger.debug("Tatoeba fetch failed: %s", exc)
+    except FetchError:
         return TatoebaResult(examples=[])
     try:
         examples = _parse_tatoeba_payload(payload)
-    except Exception as exc:
-        logger.warning("Tatoeba parse failed: %s", exc)
+    except Exception:
         return TatoebaResult(examples=[])
     return TatoebaResult(examples=examples)
 

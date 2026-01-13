@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-import logging
 from typing import TypeGuard
 from urllib.parse import quote
 
@@ -11,8 +10,6 @@ from translate_logic.models import Example
 from translate_logic.text import normalize_whitespace
 
 DICTIONARY_API_BASE_URL = "https://api.dictionaryapi.dev/api/v2/entries/en/"
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,13 +30,11 @@ async def translate_dictionary_api(
     url = build_dictionary_api_url(text)
     try:
         payload = await fetcher(url)
-    except FetchError as exc:
-        logger.debug("Dictionary API fetch failed: %s", exc)
+    except FetchError:
         return DictionaryApiResult(ipa_uk=None, examples=[])
     try:
         ipa_uk, examples = _parse_dictionary_api_payload(payload)
-    except Exception as exc:
-        logger.warning("Dictionary API parse failed: %s", exc)
+    except Exception:
         return DictionaryApiResult(ipa_uk=None, examples=[])
     return DictionaryApiResult(ipa_uk=ipa_uk, examples=examples)
 

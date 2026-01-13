@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from concurrent.futures import Future
-from pathlib import Path
 
 import pytest
 
@@ -11,16 +10,21 @@ from desktop_app.adapters.clipboard_writer import ClipboardWriter
 from desktop_app.anki import AnkiAddResult, AnkiCreateModelResult, AnkiListResult
 from desktop_app.application.anki_flow import AnkiFlow
 from desktop_app.application.history import HistoryItem
+from desktop_app.application.translation_executor import TranslationExecutor
 from desktop_app.application.translation_flow import TranslationFlow
+from desktop_app.application.view_state import TranslationViewState
 from desktop_app.config import AnkiConfig, AnkiFieldMap, AppConfig, LanguageConfig
 from desktop_app.controllers.anki_controller import AnkiController
 from desktop_app.controllers.translation_controller import TranslationController
-from desktop_app.services.selection_cache import SelectionCache
-from desktop_app.application.view_state import TranslationViewState
 from translate_logic.models import FieldValue, TranslationResult
 
 
 class DummyApp(gtk_types.Gtk.Application):
+    def __init__(self) -> None:
+        pass
+
+
+class DummyGtkWindow(gtk_types.Gtk.ApplicationWindow):
     def __init__(self) -> None:
         pass
 
@@ -34,7 +38,7 @@ class DummyTranslationWindow:
         on_copy_all: object,
         on_add: object,
     ) -> None:
-        self.window = object()
+        self.window = DummyGtkWindow()
         self.last_state: TranslationViewState | None = None
         self.presented = False
 
@@ -45,10 +49,32 @@ class DummyTranslationWindow:
         self.presented = True
 
     def hide(self) -> None:
-        return
+        self.presented = False
 
     def show_banner(self, _notification: object) -> None:
         return
+
+
+class DummyHistoryWindow:
+    def __init__(
+        self,
+        *,
+        app: gtk_types.Gtk.Application,
+        on_close: object,
+        on_select: object,
+    ) -> None:
+        self.window = DummyGtkWindow()
+        self.presented = False
+        self.items: list[HistoryItem] = []
+
+    def present(self) -> None:
+        self.presented = True
+
+    def hide(self) -> None:
+        self.presented = False
+
+    def refresh(self, items: Iterable[HistoryItem]) -> None:
+        self.items = list(items)
 
 
 class FakeTranslator:
@@ -104,23 +130,35 @@ class FakeAnkiPort:
 
 
 @pytest.fixture()
-def controller(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> TranslationController:
-    from desktop_app.controllers import translation_controller as controller_module
+def controller(monkeypatch: pytest.MonkeyPatch) -> TranslationController:
+    from desktop_app.controllers import history_view as history_view_module
+    from desktop_app.controllers import translation_view as translation_view_module
 
-    monkeypatch.setattr(controller_module, "TranslationWindow", DummyTranslationWindow)
+    def build_translation_window(
+        *,
+        app: gtk_types.Gtk.Application,
+        on_close: Callable[[], None],
+        on_copy_all: Callable[[], None],
+        on_add: Callable[[], None],
+    ) -> DummyTranslationWindow:
+        return DummyTranslationWindow(
+            app=app, on_close=on_close, on_copy_all=on_copy_all, on_add=on_add
+        )
+
+    def build_history_window(
+        *,
+        app: gtk_types.Gtk.Application,
+        on_close: Callable[[], None],
+        on_select: Callable[[HistoryItem], None],
+    ) -> DummyHistoryWindow:
+        return DummyHistoryWindow(app=app, on_close=on_close, on_select=on_select)
+
+    monkeypatch.setattr(
+        translation_view_module, "_build_window", build_translation_window
+    )
+    monkeypatch.setattr(history_view_module, "_build_window", build_history_window)
 
     app = DummyApp()
-    cache_dir = tmp_path / "cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    selection_cache = SelectionCache(path=cache_dir / "last.txt")
-    translation_flow = TranslationFlow(
-        translator=FakeTranslator(),
-        history=FakeHistory(),
-    )
-    anki_flow = AnkiFlow(service=FakeAnkiPort())
-    anki_controller = AnkiController(anki_flow=anki_flow)
     config = AppConfig(
         languages=LanguageConfig(source="en", target="ru"),
         anki=AnkiConfig(
@@ -135,15 +173,21 @@ def controller(
             ),
         ),
     )
+    translation_flow = TranslationFlow(
+        translator=FakeTranslator(),
+        history=FakeHistory(),
+    )
+    translation_executor = TranslationExecutor(flow=translation_flow, config=config)
+    anki_flow = AnkiFlow(service=FakeAnkiPort())
+    anki_controller = AnkiController(anki_flow=anki_flow)
     clipboard_writer = ClipboardWriter()
     return TranslationController(
         app=app,
-        translation_flow=translation_flow,
+        translation_executor=translation_executor,
         cancel_active=lambda: None,
         config=config,
         clipboard_writer=clipboard_writer,
         anki_controller=anki_controller,
-        selection_cache=selection_cache,
         on_present_window=lambda _window: None,
         on_open_settings=lambda: None,
     )
@@ -162,12 +206,11 @@ def test_history_item_click_opens_translation(
 
     controller._on_history_item_selected(item)
 
-    assert controller._current_text == "hello"
-    assert controller._current_result == result
-    assert controller._translation_view is not None
-    assert controller._translation_view.presented is True
+    assert controller._state.memory.text == "hello"
+    assert controller._state.memory.result == result
+    assert controller._view.is_visible() is True
 
-    state = controller._view_state
+    state = controller._view.state
     assert state.original.strip() == "hello"
     assert state.translation == "перевод"
     assert state.loading is False

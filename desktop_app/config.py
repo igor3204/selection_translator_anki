@@ -11,6 +11,10 @@ CONFIG_FILE_NAME: Final[str] = "desktop_config.json"
 DEFAULT_SOURCE_LANG: Final[str] = "en"
 DEFAULT_TARGET_LANG: Final[str] = "ru"
 
+type JsonValue = (
+    str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
+)
+
 
 @dataclass(frozen=True, slots=True)
 class LanguageConfig:
@@ -67,7 +71,7 @@ def load_config() -> AppConfig:
         return _apply_env_overrides(_default_config())
     try:
         raw_data = path.read_text(encoding="utf-8")
-        payload: object = json.loads(raw_data)
+        payload: JsonValue = json.loads(raw_data)
     except (OSError, json.JSONDecodeError):
         return _apply_env_overrides(_default_config())
     return _apply_env_overrides(_parse_config(payload))
@@ -101,7 +105,7 @@ def _default_config() -> AppConfig:
     )
 
 
-def _parse_config(payload: object) -> AppConfig:
+def _parse_config(payload: JsonValue) -> AppConfig:
     payload_dict = _get_dict(payload)
     if payload_dict is None:
         return _default_config()
@@ -141,7 +145,7 @@ def _apply_env_overrides(config: AppConfig) -> AppConfig:
     return _default_config()
 
 
-def _config_to_dict(config: AppConfig) -> dict[str, object]:
+def _config_to_dict(config: AppConfig) -> dict[str, JsonValue]:
     return {
         "languages": {
             "source": config.languages.source,
@@ -161,17 +165,13 @@ def _config_to_dict(config: AppConfig) -> dict[str, object]:
     }
 
 
-def _get_dict(value: object | None) -> dict[str, object] | None:
+def _get_dict(value: JsonValue | None) -> dict[str, JsonValue] | None:
     if isinstance(value, dict):
-        result: dict[str, object] = {}
-        for key, item in value.items():
-            if isinstance(key, str):
-                result[key] = item
-        return result
+        return value
     return None
 
 
-def _get_str(value: object | None, default: str) -> str:
+def _get_str(value: JsonValue | None, default: str) -> str:
     if isinstance(value, str):
         return value
     return default

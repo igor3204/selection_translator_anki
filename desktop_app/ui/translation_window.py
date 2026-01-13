@@ -8,7 +8,6 @@ from desktop_app.notifications import BannerHost, Notification
 from desktop_app.ui.drag import attach_window_drag
 from desktop_app.ui.theme import apply_theme
 from desktop_app import gtk_types
-from desktop_app import telemetry
 
 gi = importlib.import_module("gi")
 require_version = getattr(gi, "require_version", None)
@@ -136,18 +135,15 @@ class TranslationWindow:
 
         self._window = window
         self._apply_state(TranslationViewState.empty())
-        telemetry.log_event("ui.translation_window.created")
 
     @property
     def window(self) -> gtk_types.Gtk.ApplicationWindow:
         return self._window
 
     def present(self) -> None:
-        telemetry.log_event("ui.translation_window.present")
         self._window.present()
 
     def hide(self) -> None:
-        telemetry.log_event("ui.translation_window.hide")
         self._window.hide()
 
     def apply_state(self, state: TranslationViewState) -> None:

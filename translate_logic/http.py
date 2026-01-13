@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import logging
 from typing import Awaitable, Callable
 
 import aiohttp
@@ -12,8 +11,6 @@ DEFAULT_TIMEOUT_SECONDS = 10.0
 DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 6.1; Win64; x64)"
 
 AsyncFetcher = Callable[[str], Awaitable[str]]
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,7 +35,6 @@ async def fetch_text_async(
         ) as response:
             return await response.text(errors="replace")
     except Exception as exc:
-        logger.debug("Fetch failed for %s: %s", url, exc)
         raise FetchError(f"Failed to fetch {url}") from exc
 
 
